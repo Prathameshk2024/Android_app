@@ -1,5 +1,5 @@
 import * as FileSystem from 'expo-file-system';
-import { Paths } from 'expo-file-system';
+import { File, Paths } from 'expo-file-system';
 import * as Notifications from 'expo-notifications';
 import * as Sharing from 'expo-sharing';
 import { useEffect, useRef, useState } from 'react';
@@ -17,8 +17,143 @@ import {
 import RNBlobUtil from 'react-native-blob-util';
 import { WebView } from 'react-native-webview';
 
-const BASE_URL = 'https://shantai-mahila-bajar-app-frontend.vercel.app';
+// The `.hscroll` product carousels chain their horizontal overscroll to the page, which made the
+// whole page drift sideways on a left/right swipe. `overscroll-behavior-x: none` severs that
+// chain. Horizontal scrolling itself is already prevented by the site's own `body{overflow-x:
+// hidden}`, which propagates to the viewport.
+//
+// Do NOT add an `overflow` rule to <html> here. The site sets `html,body,#root{height:100%}`, so
+// making <html> non-visible stops body's overflow from propagating to the viewport and applies it
+// to <body> instead - turning the fixed-height body into the scroll container. `window.scrollY`
+// then reads 0 forever, and the site's scroll restoration (which saves/restores window.scrollY)
+// silently breaks, sending Explore back to the top on every return.
+const LOCK_HORIZONTAL_SCROLL = `
+  (function () {
+    var id = 'rn-lock-horizontal-scroll';
+    if (!document.getElementById(id)) {
+      var style = document.createElement('style');
+      style.id = id;
+      style.textContent = 'body{overscroll-behavior-x:none}';
+      document.head.appendChild(style);
+    }
+  })();
+  true;
+`;
 
+// ---------------------------------------------------------------------------------------------
+// Last-page restoration
+//
+// A browser keeps the URL, so reopening the site lands you where you were. This WebView hardcoded
+// the site root, so every cold launch restarted at "/" and the site then routed to home/dashboard.
+// We persist the last *stable* route and use it as the WebView's initial source.
+//
+// The login token lives in localStorage ("wb.token"), which survives the app process, so a
+// restored deep route stays authenticated. There is deliberately no expiry on the saved route:
+// if the user is still authenticated, restore it however long ago they were last here. If the
+// token has expired server-side, the site's own guards redirect to login exactly as they do today.
+const SITE_URL = 'https://shantai-mahila-bajar-app-frontend.vercel.app/';
+const SITE_ORIGIN = 'https://shantai-mahila-bajar-app-frontend.vercel.app';
+const LAST_ROUTE_FILE = 'last-route.json';
+
+// Default-deny allowlist. `:param` matches exactly one non-empty segment, and matching is on the
+// full segment list, so nothing is matched by prefix: /seller/products is restorable while
+// /seller/products/:productId/edit is not. Every route absent from this list is excluded, which
+// covers /, the auth funnel, /shop/checkout, /shop/placed/:orderId, /seller/payment,
+// /seller/waiting, /seller/upload and the two /edit forms.
+const RESTORABLE_ROUTES = [
+  // Customer
+  '/shop',
+  '/shop/cart',
+  '/shop/orders',
+  '/shop/categories',
+  '/shop/c/:categoryId',
+  '/shop/orders/:orderId',
+  '/shop/profile',
+  '/shop/notifications',
+  '/shop/p/:productId',
+  '/shop/seller/:sellerId',
+  // Seller
+  '/seller',
+  '/seller/notifications',
+  '/seller/orders',
+  '/seller/help',
+  '/seller/orders/:orderId',
+  '/seller/products',
+  '/seller/growth',
+  '/seller/buyers',
+  '/seller/profile',
+  '/seller/reviews',
+  '/seller/subscription',
+];
+
+const segmentsOf = (pathname: string) => pathname.split('/').filter(Boolean);
+
+function isRestorablePath(pathname: string): boolean {
+  const parts = segmentsOf(pathname);
+  if (parts.length === 0) return false;
+  return RESTORABLE_ROUTES.some((route) => {
+    const pattern = segmentsOf(route);
+    if (pattern.length !== parts.length) return false;
+    return pattern.every((seg, i) => (seg.startsWith(':') ? parts[i].length > 0 : seg === parts[i]));
+  });
+}
+
+// Same-origin + allowlisted. Applied on save *and* on read, so tightening the list later can
+// never strand someone on a route that has since been excluded.
+function isRestorableUrl(rawUrl: string): boolean {
+  try {
+    const url = new URL(rawUrl);
+    return url.origin === SITE_ORIGIN && isRestorablePath(url.pathname);
+  } catch {
+    return false;
+  }
+}
+
+// Cold-launch "up" target. Returns the section root for a restored *deep* route, or null when no
+// up-step is warranted: a restored route that is already /shop or /seller, a non-restored launch
+// (the site root), or anything off-origin. Note /shop/seller/:sellerId is a customer route, and
+// keying off the first segment resolves it to /shop correctly.
+function sectionRootFor(rawUrl: string): string | null {
+  try {
+    const url = new URL(rawUrl);
+    if (url.origin !== SITE_ORIGIN) return null;
+    const parts = segmentsOf(url.pathname);
+    if (parts.length < 2) return null;
+    if (parts[0] === 'shop') return SITE_ORIGIN + '/shop';
+    if (parts[0] === 'seller') return SITE_ORIGIN + '/seller';
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// Synchronous on purpose: this is read inside the useState initialiser, during the first render,
+// before the WebView mounts. The WebView therefore gets its final `source` on its first and only
+// render - no loading gate, no second navigation, and no home/dashboard flash.
+function readSavedUrl(): string | null {
+  try {
+    const file = new File(Paths.document, LAST_ROUTE_FILE);
+    if (!file.exists) return null;
+    const saved = JSON.parse(file.textSync());
+    return typeof saved?.url === 'string' && isRestorableUrl(saved.url) ? saved.url : null;
+  } catch {
+    return null;
+  }
+}
+
+// Fire-and-forget. A storage failure must never affect navigation, so everything is swallowed.
+function saveUrl(rawUrl: string): void {
+  try {
+    const file = new File(Paths.document, LAST_ROUTE_FILE);
+    if (!file.exists) file.create({ intermediates: true, overwrite: true });
+    // savedAt is recorded for diagnostics only - it is never used to expire the saved route.
+    file.write(JSON.stringify({ url: rawUrl, savedAt: Date.now() }));
+  } catch {}
+}
+// ---------------------------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------------------------
+// Push notifications
 // Show the notification even while the app is open on another screen.
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -46,14 +181,21 @@ function tapPath(r: Notifications.NotificationResponse | null): string | null {
     ?.remoteMessage?.data?.path;
   return safePath(fromContent ?? fromTrigger);
 }
+// ---------------------------------------------------------------------------------------------
 
 export default function AppScreen() {
   const webViewRef = useRef<WebView>(null);
   const [canGoBack, setCanGoBack] = useState(false);
+  // Resolved once, before the WebView mounts, so `source` never changes and never reloads.
+  // A tapped notification outranks the saved route, which outranks the site root. The
+  // notification answer only arrives asynchronously, so this is the one thing that may change
+  // `source` after mount, and only on a notification launch.
+  const [initialUrl, setInitialUrl] = useState(() => readSavedUrl() ?? SITE_URL);
+  const lastSavedUrl = useRef<string | null>(null);
+  // Armed only when the app cold-launched on a restored deep route; consumed after one use.
+  const pendingUpTarget = useRef<string | null>(sectionRootFor(initialUrl));
+  const currentUrl = useRef<string>(initialUrl);
   const [loading, setLoading] = useState(true);
-
-  // Where the WebView opens: the home page, or the order a tapped notification is about.
-  const [startUrl, setStartUrl] = useState<string | null>(null);
 
   const sendTokenToPage = (token: string) => {
     webViewRef.current?.injectJavaScript(
@@ -80,9 +222,18 @@ export default function AppScreen() {
       sound: 'default',
       lightColor: '#7b1e2e',
     });
-    Notifications.getLastNotificationResponseAsync().then((r) => {
-      setStartUrl(BASE_URL + (tapPath(r) ?? '/'));
-    });
+    // Cold launch from a tapped notification: open that page instead of the restored route, and
+    // re-aim the one-time "up" step at whichever page won. A failure here leaves the restored
+    // route in place rather than blanking the screen, hence the catch.
+    Notifications.getLastNotificationResponseAsync()
+      .then((r) => {
+        const p = tapPath(r);
+        if (!p) return;
+        const url = SITE_ORIGIN + p;
+        setInitialUrl(url);
+        pendingUpTarget.current = sectionRootFor(url);
+      })
+      .catch((err) => console.warn('notification launch lookup failed', err));
     const tap = Notifications.addNotificationResponseReceivedListener((r) => {
       const p = tapPath(r);
       if (p) webViewRef.current?.injectJavaScript(`window.location.assign(${JSON.stringify(p)}); true;`);
@@ -98,7 +249,31 @@ export default function AppScreen() {
   useEffect(() => {
     const backAction = () => {
       if (canGoBack && webViewRef.current) {
-        webViewRef.current.goBack();
+        // Go back through the page's own history, exactly like the browser's Back button.
+        // Native webView.goBack() traverses Android's WebBackForwardList instead, and does not
+        // reliably round-trip window.history.state. React Router keeps `idx` and `key` in that
+        // state, and falls back to the literal key "default" when it is missing - which collapses
+        // every route onto one key and corrupts its scroll-position Map.
+        webViewRef.current.injectJavaScript('window.history.back(); true;');
+        return true;
+      }
+      // Cold-launch only. The app opened directly on a restored deep route, so the WebView has no
+      // history behind it and Back would otherwise exit the app. Step up to the section root once.
+      // Guarded on still being inside that section, so a logged-out redirect (e.g. /login/customer)
+      // falls through and exits normally instead of jumping to /shop or /seller.
+      if (
+        pendingUpTarget.current &&
+        sectionRootFor(currentUrl.current) === pendingUpTarget.current &&
+        webViewRef.current
+      ) {
+        const target = pendingUpTarget.current;
+        pendingUpTarget.current = null;
+        // `replace`, not `assign`: it overwrites the deep entry rather than stacking on top of it,
+        // so once at /shop or /seller the history is empty again and Back exits the app - the same
+        // behaviour as a normal launch. Normal WebView/site navigation continues untouched.
+        webViewRef.current.injectJavaScript(
+          `window.location.replace(${JSON.stringify(target)}); true;`
+        );
         return true;
       }
       return false;
@@ -327,10 +502,9 @@ export default function AppScreen() {
           <ActivityIndicator size="large" color="#2196F3" />
         </View>
       )}
-      {startUrl && (
       <WebView
         ref={webViewRef}
-        source={{ uri: startUrl }}
+        source={{ uri: initialUrl }}
         style={styles.webview}
         javaScriptEnabled
         domStorageEnabled
@@ -340,10 +514,11 @@ export default function AppScreen() {
         sharedCookiesEnabled
         showsVerticalScrollIndicator={false}
         showsHorizontalScrollIndicator={false}
-        // Pinch-to-zoom off on Android (maps to WebSettings.builtInZoomControls).
+        // Disable pinch-to-zoom on Android (maps to WebSettings.builtInZoomControls)
         setBuiltInZoomControls={false}
-        // Android 12+ stretch overscroll springs back at the scroll edges, which reads as a wobble.
+        // Stop Android 12+ stretch overscroll from springing/wobbling the page at scroll edges
         overScrollMode="never"
+        injectedJavaScript={LOCK_HORIZONTAL_SCROLL}
         // Also what makes window.ReactNativeWebView exist in the page at all.
         onMessage={(e) => {
           try {
@@ -393,7 +568,20 @@ export default function AppScreen() {
           
           return true; // allow normal navigation
         }}
-        onNavigationStateChange={(navState) => setCanGoBack(navState.canGoBack)}
+        onNavigationStateChange={(navState) => {
+          setCanGoBack(navState.canGoBack);
+          currentUrl.current = navState.url;
+          // Persist the last stable route. Skipped mid-load, and deduped because this callback
+          // fires several times per navigation.
+          if (
+            !navState.loading &&
+            navState.url !== lastSavedUrl.current &&
+            isRestorableUrl(navState.url)
+          ) {
+            lastSavedUrl.current = navState.url;
+            saveUrl(navState.url);
+          }
+        }}
         onLoadEnd={() => setLoading(false)}
         onError={({ nativeEvent }) => {
           if (nativeEvent.description?.includes('ERR_UNKNOWN_URL_SCHEME')) {
@@ -418,7 +606,6 @@ export default function AppScreen() {
           );
         }}
       />
-      )}
     </View>
   );
 }
