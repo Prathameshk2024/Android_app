@@ -1,5 +1,6 @@
 import * as FileSystem from 'expo-file-system';
 import { Paths } from 'expo-file-system';
+import * as Notifications from 'expo-notifications';
 import * as Sharing from 'expo-sharing';
 import { useEffect, useRef, useState } from 'react';
 import {
@@ -16,10 +17,82 @@ import {
 import RNBlobUtil from 'react-native-blob-util';
 import { WebView } from 'react-native-webview';
 
+const BASE_URL = 'https://shantai-mahila-bajar-app-frontend.vercel.app';
+
+// Show the notification even while the app is open on another screen.
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowBanner: true,
+    shouldShowList: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  }),
+});
+
+/**
+ * A tap may only open one of OUR pages: a path, never a URL, never "//host"
+ * and never "/\host" either - location.assign (and every browser) treats a
+ * leading backslash as a slash, so "/\evil.com" is "//evil.com" in disguise.
+ */
+function safePath(p: unknown): string | null {
+  return typeof p === 'string' && /^\/(?![\/\\])/.test(p) ? p : null;
+}
+
+/** FCM data can arrive in either place depending on how Android delivered it. */
+function tapPath(r: Notifications.NotificationResponse | null): string | null {
+  const req = r?.notification.request;
+  const fromContent = (req?.content.data as { path?: unknown } | undefined)?.path;
+  const fromTrigger = (req?.trigger as { remoteMessage?: { data?: { path?: unknown } } } | undefined)
+    ?.remoteMessage?.data?.path;
+  return safePath(fromContent ?? fromTrigger);
+}
+
 export default function AppScreen() {
   const webViewRef = useRef<WebView>(null);
   const [canGoBack, setCanGoBack] = useState(false);
   const [loading, setLoading] = useState(true);
+
+  // Where the WebView opens: the home page, or the order a tapped notification is about.
+  const [startUrl, setStartUrl] = useState<string | null>(null);
+
+  const sendTokenToPage = (token: string) => {
+    webViewRef.current?.injectJavaScript(
+      `window.__smbPushToken && window.__smbPushToken(${JSON.stringify(token)}); true;`,
+    );
+  };
+
+  const enablePush = async () => {
+    try {
+      const perm = await Notifications.requestPermissionsAsync();
+      if (perm.status !== 'granted') return;
+      const t = await Notifications.getDevicePushTokenAsync();
+      sendTokenToPage(String(t.data));
+    } catch (err) {
+      console.warn('push setup failed', err);
+    }
+  };
+
+  useEffect(() => {
+    // Android 13 asks permission only for an app that has a channel.
+    void Notifications.setNotificationChannelAsync('orders', {
+      name: 'ऑर्डर व सूचना',
+      importance: Notifications.AndroidImportance.HIGH,
+      sound: 'default',
+      lightColor: '#7b1e2e',
+    });
+    Notifications.getLastNotificationResponseAsync().then((r) => {
+      setStartUrl(BASE_URL + (tapPath(r) ?? '/'));
+    });
+    const tap = Notifications.addNotificationResponseReceivedListener((r) => {
+      const p = tapPath(r);
+      if (p) webViewRef.current?.injectJavaScript(`window.location.assign(${JSON.stringify(p)}); true;`);
+    });
+    const rotate = Notifications.addPushTokenListener((t) => sendTokenToPage(String(t.data)));
+    return () => {
+      tap.remove();
+      rotate.remove();
+    };
+  }, []);
 
   // Handle back press
   useEffect(() => {
@@ -254,9 +327,10 @@ export default function AppScreen() {
           <ActivityIndicator size="large" color="#2196F3" />
         </View>
       )}
+      {startUrl && (
       <WebView
         ref={webViewRef}
-        source={{ uri: 'https://shantai-mahila-bajar-app-frontend.vercel.app/' }}
+        source={{ uri: startUrl }}
         style={styles.webview}
         javaScriptEnabled
         domStorageEnabled
@@ -266,6 +340,14 @@ export default function AppScreen() {
         sharedCookiesEnabled
         showsVerticalScrollIndicator={false}
         showsHorizontalScrollIndicator={false}
+        // Also what makes window.ReactNativeWebView exist in the page at all.
+        onMessage={(e) => {
+          try {
+            if (JSON.parse(e.nativeEvent.data)?.type === 'push:enable') void enablePush();
+          } catch {
+            // Not ours.
+          }
+        }}
         onShouldStartLoadWithRequest={(request) => {
           console.log('Intercepted URL:', request.url);
           const rawUrl = request.url;
@@ -332,6 +414,7 @@ export default function AppScreen() {
           );
         }}
       />
+      )}
     </View>
   );
 }

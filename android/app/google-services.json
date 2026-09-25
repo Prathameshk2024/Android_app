@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "788285098262",
+    "project_id": "shantaimahilabajar",
+    "storage_bucket": "shantaimahilabajar.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:788285098262:android:374ba94a60e07d34b5a837",
+        "android_client_info": {
+          "package_name": "com.siddharam_sutar.mywebviewapp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDARnEBnJtFS9JzAEK1TLFfe3AT12qB6vw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
