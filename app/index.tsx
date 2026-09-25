@@ -340,6 +340,10 @@ export default function AppScreen() {
         sharedCookiesEnabled
         showsVerticalScrollIndicator={false}
         showsHorizontalScrollIndicator={false}
+        // Pinch-to-zoom off on Android (maps to WebSettings.builtInZoomControls).
+        setBuiltInZoomControls={false}
+        // Android 12+ stretch overscroll springs back at the scroll edges, which reads as a wobble.
+        overScrollMode="never"
         // Also what makes window.ReactNativeWebView exist in the page at all.
         onMessage={(e) => {
           try {
