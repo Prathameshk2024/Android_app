@@ -104,15 +104,31 @@ android {
             keyAlias 'androiddebugkey'
             keyPassword 'android'
         }
+        // The Play upload key. Its four values live OUTSIDE the repo, in ~/.gradle/gradle.properties
+        // (SMB_UPLOAD_STORE_FILE = absolute path to the .jks, plus the other three). Losing the
+        // keystore or its passwords means asking Play support to reset the upload key.
+        if (findProperty('SMB_UPLOAD_STORE_FILE')) {
+            release {
+                storeFile file(findProperty('SMB_UPLOAD_STORE_FILE'))
+                storePassword findProperty('SMB_UPLOAD_STORE_PASSWORD')
+                keyAlias findProperty('SMB_UPLOAD_KEY_ALIAS')
+                keyPassword findProperty('SMB_UPLOAD_KEY_PASSWORD')
+            }
+        }
     }
     buildTypes {
         debug {
             signingConfig signingConfigs.debug
         }
         release {
-            // Caution! In production, you need to generate your own keystore file.
-            // see https://reactnative.dev/docs/signed-apk-android.
-            signingConfig signingConfigs.debug
+            // Without the upload key, a release build is still signed - with the debug key, which
+            // installs fine for testing but which Play refuses.
+            if (signingConfigs.findByName('release')) {
+                signingConfig signingConfigs.release
+            } else {
+                logger.warn('SMB_UPLOAD_STORE_FILE is not set: release is signed with the DEBUG key. Play will refuse it.')
+                signingConfig signingConfigs.debug
+            }
             def enableShrinkResources = findProperty('android.enableShrinkResourcesInReleaseBuilds') ?: 'false'
             shrinkResources enableShrinkResources.toBoolean()
             minifyEnabled enableMinifyInReleaseBuilds

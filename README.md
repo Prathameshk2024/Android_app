@@ -1,5 +1,27 @@
 # Welcome to your Expo app 👋
 
+## Release signing (Play upload key)
+
+A release build uses the upload key when `~/.gradle/gradle.properties` (on the
+building machine, never in this repo) has:
+
+```properties
+SMB_UPLOAD_STORE_FILE=C:/keys/smb-upload.jks
+SMB_UPLOAD_STORE_PASSWORD=...
+SMB_UPLOAD_KEY_ALIAS=smb-upload
+SMB_UPLOAD_KEY_PASSWORD=...
+```
+
+Make the keystore once, and back it up with its passwords somewhere safe:
+
+```bash
+keytool -genkeypair -v -storetype PKCS12 -keystore smb-upload.jks -alias smb-upload -keyalg RSA -keysize 2048 -validity 10000
+```
+
+Without those properties the release build is signed with the debug key, which
+installs for testing but which Play refuses. Check the permissions of any release
+APK with `aapt dump permissions app-release.apk`.
+
 This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
 
 ## Get started

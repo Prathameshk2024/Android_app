@@ -6,15 +6,14 @@ import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  AppState,
   BackHandler,
   Linking,
-  PermissionsAndroid,
-  Platform,
+  Pressable,
   StyleSheet,
   Text,
   View
 } from 'react-native';
-import RNBlobUtil from 'react-native-blob-util';
 import { WebView } from 'react-native-webview';
 
 // The `.hscroll` product carousels chain their horizontal overscroll to the page, which made the
@@ -181,21 +180,42 @@ function tapPath(r: Notifications.NotificationResponse | null): string | null {
     ?.remoteMessage?.data?.path;
   return safePath(fromContent ?? fromTrigger);
 }
+
+/**
+ * The page to open on launch: a tapped notification > the saved last page > the site root.
+ * Synchronous, like readSavedUrl, so a notification launch also gets its final `source` on the
+ * first render - no detour through the saved page, and Back from the order steps up to /seller or
+ * /shop rather than to whatever page happened to be saved.
+ */
+function launchTarget(): { url: string; tapId: string | null } {
+  try {
+    const r = Notifications.getLastNotificationResponse();
+    const p = tapPath(r);
+    if (p) return { url: SITE_ORIGIN + p, tapId: r!.notification.request.identifier };
+  } catch (err) {
+    // A failure here leaves the restored route in place rather than blanking the screen.
+    console.warn('notification launch lookup failed', err);
+  }
+  return { url: readSavedUrl() ?? SITE_URL, tapId: null };
+}
 // ---------------------------------------------------------------------------------------------
 
 export default function AppScreen() {
   const webViewRef = useRef<WebView>(null);
   const [canGoBack, setCanGoBack] = useState(false);
   // Resolved once, before the WebView mounts, so `source` never changes and never reloads.
-  // A tapped notification outranks the saved route, which outranks the site root. The
-  // notification answer only arrives asynchronously, so this is the one thing that may change
-  // `source` after mount, and only on a notification launch.
-  const [initialUrl, setInitialUrl] = useState(() => readSavedUrl() ?? SITE_URL);
+  const [launch] = useState(launchTarget);
+  const initialUrl = launch.url;
+  // The tap already acted on, so the launch tap is not replayed by the listener below.
+  const handledTapId = useRef<string | null>(launch.tapId);
   const lastSavedUrl = useRef<string | null>(null);
-  // Armed only when the app cold-launched on a restored deep route; consumed after one use.
+  // Armed only when the app cold-launched on a deep route; consumed after one use.
   const pendingUpTarget = useRef<string | null>(sectionRootFor(initialUrl));
   const currentUrl = useRef<string>(initialUrl);
   const [loading, setLoading] = useState(true);
+  // Set once the page has asked for push; null until then. Re-checked on every return to the
+  // app, because the only way to turn a refused permission back on is in Android's settings.
+  const pushGranted = useRef<boolean | null>(null);
 
   const sendTokenToPage = (token: string) => {
     webViewRef.current?.injectJavaScript(
@@ -203,12 +223,26 @@ export default function AppScreen() {
     );
   };
 
+  // Tells the page whether notifications can reach her, so a refusal is not invisible.
+  const sendStatusToPage = (granted: boolean) => {
+    webViewRef.current?.injectJavaScript(
+      `window.__smbPushStatus && window.__smbPushStatus(${granted}); true;`,
+    );
+  };
+
+  const reportPush = async (granted: boolean) => {
+    pushGranted.current = granted;
+    sendStatusToPage(granted);
+    if (!granted) return;
+    const t = await Notifications.getDevicePushTokenAsync();
+    sendTokenToPage(String(t.data));
+  };
+
   const enablePush = async () => {
     try {
+      // After two refusals Android stops showing the prompt and this answers "denied" at once.
       const perm = await Notifications.requestPermissionsAsync();
-      if (perm.status !== 'granted') return;
-      const t = await Notifications.getDevicePushTokenAsync();
-      sendTokenToPage(String(t.data));
+      await reportPush(perm.status === 'granted');
     } catch (err) {
       console.warn('push setup failed', err);
     }
@@ -216,32 +250,46 @@ export default function AppScreen() {
 
   useEffect(() => {
     // Android 13 asks permission only for an app that has a channel.
+    // A channel's importance and sound are fixed by Android once it exists. Changing them means a
+    // new id here AND in app.json's expo-notifications `defaultChannel` (which writes the
+    // default_notification_channel_id meta-data in AndroidManifest.xml).
     void Notifications.setNotificationChannelAsync('orders', {
       name: 'ऑर्डर व सूचना',
       importance: Notifications.AndroidImportance.HIGH,
       sound: 'default',
       lightColor: '#7b1e2e',
     });
-    // Cold launch from a tapped notification: open that page instead of the restored route, and
-    // re-aim the one-time "up" step at whichever page won. A failure here leaves the restored
-    // route in place rather than blanking the screen, hence the catch.
-    Notifications.getLastNotificationResponseAsync()
-      .then((r) => {
-        const p = tapPath(r);
-        if (!p) return;
-        const url = SITE_ORIGIN + p;
-        setInitialUrl(url);
-        pendingUpTarget.current = sectionRootFor(url);
-      })
-      .catch((err) => console.warn('notification launch lookup failed', err));
+    // The launch tap has been acted on; clear it so it can never reopen an old order later.
+    if (handledTapId.current) {
+      try {
+        Notifications.clearLastNotificationResponse();
+      } catch {}
+    }
     const tap = Notifications.addNotificationResponseReceivedListener((r) => {
+      const id = r.notification.request.identifier;
+      if (id === handledTapId.current) return;
+      handledTapId.current = id;
+      try {
+        Notifications.clearLastNotificationResponse();
+      } catch {}
       const p = tapPath(r);
       if (p) webViewRef.current?.injectJavaScript(`window.location.assign(${JSON.stringify(p)}); true;`);
     });
     const rotate = Notifications.addPushTokenListener((t) => sendTokenToPage(String(t.data)));
+    // Back from Android's settings: if she changed the notification permission there, say so.
+    const resume = AppState.addEventListener('change', (state) => {
+      if (state !== 'active' || pushGranted.current === null) return;
+      Notifications.getPermissionsAsync()
+        .then((perm) => {
+          const granted = perm.status === 'granted';
+          if (granted !== pushGranted.current) return reportPush(granted);
+        })
+        .catch((err) => console.warn('push re-check failed', err));
+    });
     return () => {
       tap.remove();
       rotate.remove();
+      resume.remove();
     };
   }, []);
 
@@ -282,193 +330,32 @@ export default function AppScreen() {
     return () => backHandler.remove();
   }, [canGoBack]);
 
-  // Alternative download using Expo FileSystem (better for modern Android)
-  const handleDownloadWithExpo = async (url: string) => {
-    try {
-      console.log('Starting Expo download for URL:', url);
-      
-      // Extract filename
-      const urlParts = url.split('/');
-      const fileName = urlParts[urlParts.length - 1].split('?')[0] || `file_${Date.now()}.csv`;
-      const fileUri = Paths.document.uri + fileName;
-      
-      console.log('Downloading to:', fileUri);
-      
-      // Show loading indicator
-      Alert.alert('Download Started', 'Your file is being downloaded...');
-      
-      // Download the file
-      const downloadResult = await FileSystem.downloadAsync(url, fileUri);
-      
-      console.log('Download result:', downloadResult);
-      
-      if (downloadResult.status === 200) {
-        // Check if sharing is available
-        const isAvailable = await Sharing.isAvailableAsync();
-        
-        if (isAvailable) {
-          Alert.alert(
-            'Download Complete',
-            'File downloaded successfully! Would you like to share it?',
-            [
-              { text: 'Cancel', style: 'cancel' },
-              { 
-                text: 'Share', 
-                onPress: async () => {
-                  try {
-                    await Sharing.shareAsync(downloadResult.uri);
-                  } catch (shareError) {
-                    console.error('Share error:', shareError);
-                    Alert.alert('Share Failed', 'Could not share the file.');
-                  }
-                }
-              }
-            ]
-          );
-        } else {
-          Alert.alert('Download Complete', `File saved to: ${downloadResult.uri}`);
-        }
-      } else {
-        throw new Error(`Download failed with status: ${downloadResult.status}`);
-      }
-      
-      return false;
-    } catch (error) {
-      console.error('Expo download error:', error);
-      Alert.alert(
-        'Download Failed', 
-        `Error: ${error instanceof Error ? error.message : 'Unknown error occurred'}`
-      );
-      return false;
-    }
-  };
-
-  // Download handler with fallback strategy
+  // Downloads. The site no longer starts any inside the APK, so this is a safety net: fetch into
+  // the app's own storage (no permission needed on any Android version) and offer to share it.
+  // The old react-native-blob-util path needed the storage permissions and was never reached,
+  // because this one catches its own errors.
   const handleDownload = async (url: string) => {
     try {
-      console.log('Starting download for URL:', url);
-      
-      // For modern Android versions, prefer Expo FileSystem approach
-      if (Platform.OS === 'android') {
-        // Try Expo approach first (works better on Android 11+)
-        try {
-          return await handleDownloadWithExpo(url);
-        } catch (expoError) {
-          console.log('Expo download failed, trying RNBlobUtil:', expoError);
-          // Fallback to RNBlobUtil approach
-        }
+      const fileName = url.split('/').pop()?.split('?')[0] || `file_${Date.now()}`;
+      const result = await FileSystem.downloadAsync(url, Paths.document.uri + fileName);
+      if (result.status !== 200) throw new Error(`status ${result.status}`);
+      if (!(await Sharing.isAvailableAsync())) {
+        Alert.alert('फाइल डाउनलोड झाली', fileName);
+        return;
       }
-      
-      // Original RNBlobUtil approach (fallback or iOS)
-      if (Platform.OS === 'android') {
-        const permissions = [
-          PermissionsAndroid.PERMISSIONS.READ_EXTERNAL_STORAGE,
-          PermissionsAndroid.PERMISSIONS.WRITE_EXTERNAL_STORAGE,
-        ];
-
-        const granted = await PermissionsAndroid.requestMultiple(permissions);
-        
-        console.log('Permissions granted:', granted);
-        
-        const hasPermission = Object.values(granted).some(
-          permission => permission === PermissionsAndroid.RESULTS.GRANTED
-        );
-        
-        if (!hasPermission) {
-          // If permissions denied, try Expo approach as fallback
-          console.log('Permissions denied, trying Expo approach...');
-          return await handleDownloadWithExpo(url);
-        }
-      }
-
-      const { fs, config } = RNBlobUtil;
-      
-      const urlParts = url.split('/');
-      const fileName = urlParts[urlParts.length - 1].split('?')[0];
-      const ext = fileName.includes('.') ? fileName.split('.').pop() : 'csv';
-      const timestamp = new Date().getTime();
-      const downloadFileName = `file_${timestamp}.${ext}`;
-      
-      console.log('RNBlobUtil download config:', {
-        fileName: downloadFileName,
-        extension: ext,
-        downloadDir: fs.dirs.DownloadDir
-      });
-
-      const downloadConfig = {
-        fileCache: true,
-        appendExt: ext,
-        addAndroidDownloads: {
-          useDownloadManager: true,
-          notification: true,
-          mime: getMimeType(ext || 'csv'),
-          description: 'Downloading file...',
-          mediaScannable: true,
+      Alert.alert('फाइल डाउनलोड झाली', 'ही फाइल पाठवायची आहे का?', [
+        { text: 'नाही', style: 'cancel' },
+        {
+          text: 'पाठवा',
+          onPress: () => {
+            Sharing.shareAsync(result.uri).catch((err) => console.error('Share error:', err));
+          },
         },
-      };
-
-      console.log('Starting RNBlobUtil fetch...');
-
-      config(downloadConfig)
-        .fetch('GET', url, {
-          'User-Agent': 'Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36',
-        })
-        .then((res) => {
-          console.log('RNBlobUtil download successful:', res.path());
-          Alert.alert(
-            'Download Complete', 
-            `File saved successfully!\nPath: ${res.path()}`,
-            [{ text: 'OK' }]
-          );
-        })
-        .catch(async (err) => {
-          console.error('RNBlobUtil download error:', err);
-          // Final fallback to Expo approach
-          console.log('RNBlobUtil failed, final attempt with Expo...');
-          try {
-            return await handleDownloadWithExpo(url);
-          } catch {
-            Alert.alert(
-              'Download Failed', 
-              `All download methods failed. Error: ${err.message || 'Unknown error occurred'}`,
-              [{ text: 'OK' }]
-            );
-          }
-        });
-
-      return false;
+      ]);
     } catch (error) {
-      console.error('Download handler error:', error);
-      // Final fallback to Expo
-      try {
-        return await handleDownloadWithExpo(url);
-      } catch {
-        Alert.alert(
-          'Download Error', 
-          `Failed to start download: ${error instanceof Error ? error.message : 'Unknown error'}`,
-          [{ text: 'OK' }]
-        );
-        return false;
-      }
+      console.error('Download error:', error);
+      Alert.alert('फाइल डाउनलोड झाली नाही', 'इंटरनेट तपासा आणि पुन्हा प्रयत्न करा.');
     }
-  };
-
-  // Helper function to get MIME type based on file extension
-  const getMimeType = (extension: string): string => {
-    const mimeTypes: { [key: string]: string } = {
-      'pdf': 'application/pdf',
-      'csv': 'text/csv',
-      'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      'xls': 'application/vnd.ms-excel',
-      'doc': 'application/msword',
-      'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      'txt': 'text/plain',
-      'zip': 'application/zip',
-      'png': 'image/png',
-      'jpg': 'image/jpeg',
-      'jpeg': 'image/jpeg',
-    };
-    return mimeTypes[extension.toLowerCase()] || 'application/octet-stream';
   };
 
   // Handle external apps (UPI payments, WhatsApp, Phone calls, Email, etc.)
@@ -486,11 +373,11 @@ export default function AppScreen() {
       console.error('Failed to open external app:', error);
       if (url.toLowerCase().startsWith('upi:')) {
         Alert.alert(
-          'UPI App Not Found',
-          'Please install a UPI payment app like Google Pay, PhonePe, Paytm, or BHIM to complete this payment.'
+          'UPI ॲप सापडले नाही',
+          'पैसे भरण्यासाठी Google Pay, PhonePe, Paytm किंवा BHIM यांपैकी एखादे UPI ॲप फोनमध्ये इन्स्टॉल करा.'
         );
       } else {
-        Alert.alert('Cannot Open App', 'No application found on your device to handle this action.');
+        Alert.alert('हे उघडता आले नाही', 'हे उघडणारे ॲप या फोनमध्ये नाही.');
       }
     }
   };
@@ -522,7 +409,10 @@ export default function AppScreen() {
         // Also what makes window.ReactNativeWebView exist in the page at all.
         onMessage={(e) => {
           try {
-            if (JSON.parse(e.nativeEvent.data)?.type === 'push:enable') void enablePush();
+            const type = JSON.parse(e.nativeEvent.data)?.type;
+            if (type === 'push:enable') void enablePush();
+            // The page's "turn notifications on" button, shown after she refused the prompt.
+            if (type === 'push:settings') void Linking.openSettings();
           } catch {
             // Not ours.
           }
@@ -587,7 +477,7 @@ export default function AppScreen() {
           if (nativeEvent.description?.includes('ERR_UNKNOWN_URL_SCHEME')) {
             return;
           }
-          Alert.alert('WebView error', nativeEvent.description);
+          // renderError below shows her what went wrong; a pop-up on top only repeated it in English.
           console.warn('WebView error: ', nativeEvent);
         }}
         startInLoadingState={true}
@@ -600,8 +490,12 @@ export default function AppScreen() {
             );
           }
           return (
-            <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-              <Text style={{ color: 'red' }}>Failed to load page: {errorName}</Text>
+            <View style={styles.errorContainer}>
+              <Text style={styles.errorTitle}>पान उघडता आले नाही</Text>
+              <Text style={styles.errorBody}>इंटरनेट चालू आहे का ते पहा आणि पुन्हा प्रयत्न करा.</Text>
+              <Pressable style={styles.errorButton} onPress={() => webViewRef.current?.reload()}>
+                <Text style={styles.errorButtonText}>पुन्हा प्रयत्न करा</Text>
+              </Pressable>
             </View>
           );
         }}
@@ -621,6 +515,37 @@ const styles = StyleSheet.create({
     flex: 1,
     margin: 0,
     padding: 0,
+  },
+  errorContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+    backgroundColor: '#fff',
+  },
+  errorTitle: {
+    fontSize: 20,
+    fontWeight: '600',
+    color: '#7b1e2e',
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  errorBody: {
+    fontSize: 16,
+    color: '#333',
+    marginBottom: 24,
+    textAlign: 'center',
+  },
+  errorButton: {
+    backgroundColor: '#7b1e2e',
+    borderRadius: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+  },
+  errorButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
   },
   loadingContainer: {
     position: 'absolute',

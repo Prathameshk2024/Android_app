@@ -1,15 +1,18 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
-  <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION"/>
-  <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
-  <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
+  <!-- Keep in step with app.json android.permissions / blockedPermissions. -->
+  <!-- CAMERA is declared but never requested, ON PURPOSE. While it is declared-and-not-granted,
+       react-native-webview's file picker offers the gallery only - the product rule is "one photo,
+       from the gallery". Removing it adds a "take photo" option to that picker. -->
   <uses-permission android:name="android.permission.CAMERA"/>
   <uses-permission android:name="android.permission.INTERNET"/>
-  <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
+  <!-- Push on Android 13+. expo-notifications merges it in too; declared so it never depends on that. -->
+  <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+  <!-- Voice typing (Web Speech API) in the site's forms. -->
   <uses-permission android:name="android.permission.RECORD_AUDIO"/>
-  <uses-permission android:name="android.permission.RECORD_AUDIO"/>
-  <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
   <uses-permission android:name="android.permission.VIBRATE"/>
-  <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
+  <!-- react-native-blob-util merges these in. Nothing uses them, and they do nothing on Android 13+. -->
+  <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" tools:node="remove"/>
+  <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" tools:node="remove"/>
   <queries>
     <intent>
       <action android:name="android.intent.action.VIEW"/>
