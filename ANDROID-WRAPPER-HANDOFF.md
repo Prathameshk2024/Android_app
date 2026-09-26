@@ -132,15 +132,19 @@ cheapest way to get it when wanted.)
 
 ## Status after the follow-up (26 September 2026)
 
-Done in code, **not yet built or tried on a phone** (the machine had no
-Android SDK). Checked only by `tsc`, `expo config`, and the web app's tests.
+Built as a release APK (debug-signed) and **tested on a Samsung Galaxy S24 FE
+(Android 16) and a second phone on 26 September**: every item of the test
+checklist below passed, except the mic (skipped). Testing found one bug, fixed
+in `ea8689a`: the load-error screen took half the height and Android's English
+"Web page not available" page showed above it — react-native-webview renders
+`renderError`'s view beside the WebView, so it must cover it absolutely.
 
 | # | Issue | State |
 |---|---|---|
-| 1 | Permission cleanup | Done (table above) |
-| 2 | `POST_NOTIFICATIONS` | Declared explicitly; also merged by expo-notifications. Confirm with `aapt` |
+| 1 | Permission cleanup | Done; confirmed with `aapt` on the release APK |
+| 2 | `POST_NOTIFICATIONS` | Done; present in the release APK |
 | 3 | Refused permission invisible | Done in both repos (handshake steps 3 and 5) |
-| 4 | Mic never requested | **Open** — needs a phone |
+| 4 | Mic never requested | **Open**, not tested |
 | 5 | Cold-start tap loads twice | Done: synchronous `getLastNotificationResponse()` in `launchTarget()` picks the start page before the first render; Back then steps up to `/seller` or `/shop` |
 | 6 | Stale launch response | Done: `clearLastNotificationResponse()` after use (it exists in 0.32.17) |
 | 7 | Cold-start tap navigates twice | Done: taps de-duplicated by notification identifier |
@@ -151,28 +155,23 @@ Android SDK). Checked only by `tsc`, `expo config`, and the web app's tests.
 
 ## Still to do
 
-1. **Build and install** (`npx expo run:android` or a release build). Nothing
-   from the follow-up has run on a device yet.
-2. **`aapt dump permissions app-release.apk`**: the list must match the table
-   above, with no storage or location permission.
-3. **Create the Play upload keystore** (command in `README.md`), put the four
+1. **Create the Play upload keystore** (command in `README.md`), put the four
    `SMB_UPLOAD_*` values in `~/.gradle/gradle.properties` on the building
    machine, and back the `.jks` and passwords up somewhere safe. Losing them
    means a Play support request to reset the upload key.
-4. **Mic (issue 4)**: fresh install → tap a mic in a form. If the site shows its
+2. **Mic (issue 4)**: fresh install → tap a mic in a form. If the site shows its
    "denied" message, the cheapest fix is web-side: call
    `navigator.mediaDevices.getUserMedia({ audio: true })` once, stop the
    stream, then start recognition. Android System WebView may also not support
    the Web Speech API at all; then the site's "not supported" message is what
    she will see.
-5. **Proof-read the new Marathi**: wrapper pop-ups and error screen in
-   `app/index.tsx`, and `push.offTitle` / `push.offBody` / `push.openSettings`
-   in the web repo's `strings.ts`. The style test only checks the mechanical
-   rules.
-6. **Deploy order**: the web change is harmless on the current APK (the card
-   never shows), so the site can deploy first. The APK needs the rebuild for
-   the card, the permission cleanup and the tap fixes.
-7. Optional: `npm uninstall react-native-blob-util`, since nothing calls it
+3. **Release to Play**: raise `versionCode`, build signed with the upload
+   key, and run `aapt dump permissions` on that APK once more.
+4. The wrapper's GitHub repo was renamed to `Prathameshk2024/SMB_android`
+   (GitHub redirects the old URL). Update the local remote with
+   `git remote set-url origin https://github.com/Prathameshk2024/SMB_android.git`,
+   and the old name in this file and in the web repo's docs.
+5. Optional: `npm uninstall react-native-blob-util`, since nothing calls it
    now. After that the storage blocks become redundant but harmless.
 
 ## Keep in mind
