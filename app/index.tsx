@@ -481,10 +481,13 @@ export default function AppScreen() {
           console.warn('WebView error: ', nativeEvent);
         }}
         startInLoadingState={true}
+        // react-native-webview renders this view BESIDE the WebView (siblings in one column), not
+        // instead of it, so both views below must cover the WebView absolutely - otherwise
+        // Android's English "Web page not available" page shows in the other half of the screen.
         renderError={(errorName) => {
           if (errorName?.includes('ERR_UNKNOWN_URL_SCHEME')) {
             return (
-              <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+              <View style={styles.errorContainer}>
                 <ActivityIndicator size="large" color="#2196F3" />
               </View>
             );
@@ -517,7 +520,8 @@ const styles = StyleSheet.create({
     padding: 0,
   },
   errorContainer: {
-    flex: 1,
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 2,
     justifyContent: 'center',
     alignItems: 'center',
     padding: 24,
