@@ -9,11 +9,11 @@ The site no longer starts any download inside the APK. The handler in
 - The file is fetched with `expo-file-system` into the app's own document
   folder, then offered to Android's share sheet (`expo-sharing`). That needs no
   permission on any Android version.
-- The APK declares **no** storage permission. `react-native-blob-util` merges
-  `READ_EXTERNAL_STORAGE` and `WRITE_EXTERNAL_STORAGE` in; the main
-  `AndroidManifest.xml` removes them (`tools:node="remove"`) and `app.json`
-  blocks them (`blockedPermissions`). Nothing calls `react-native-blob-util`
-  any more, so it can be uninstalled.
+- The APK declares **no** storage permission. The main `AndroidManifest.xml`
+  removes `READ_EXTERNAL_STORAGE` and `WRITE_EXTERNAL_STORAGE`
+  (`tools:node="remove"`) and `app.json` blocks them (`blockedPermissions`),
+  as a guard against a library adding them back. `react-native-blob-util`,
+  which used to, has been uninstalled.
 
 To check a download by hand: `npx react-native log-android`, then look for
 `Intercepted URL` and `Download error`.

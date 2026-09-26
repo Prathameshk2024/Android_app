@@ -332,8 +332,6 @@ export default function AppScreen() {
 
   // Downloads. The site no longer starts any inside the APK, so this is a safety net: fetch into
   // the app's own storage (no permission needed on any Android version) and offer to share it.
-  // The old react-native-blob-util path needed the storage permissions and was never reached,
-  // because this one catches its own errors.
   const handleDownload = async (url: string) => {
     try {
       const fileName = url.split('/').pop()?.split('?')[0] || `file_${Date.now()}`;

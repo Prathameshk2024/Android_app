@@ -10,7 +10,8 @@
   <!-- Voice typing (Web Speech API) in the site's forms. -->
   <uses-permission android:name="android.permission.RECORD_AUDIO"/>
   <uses-permission android:name="android.permission.VIBRATE"/>
-  <!-- react-native-blob-util merges these in. Nothing uses them, and they do nothing on Android 13+. -->
+  <!-- No library adds these now (react-native-blob-util did, and is gone). Kept removed as a guard:
+       nothing needs them, and they do nothing on Android 13+. -->
   <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" tools:node="remove"/>
   <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" tools:node="remove"/>
   <queries>

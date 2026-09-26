@@ -22,13 +22,13 @@ confirm, not settled fact — every claim names the line it came from.
 
 ## Which repo and branch
 
-**Use `https://github.com/Prathameshk2024/Android_app`, branch `sub-main`**
+**Use `https://github.com/Prathameshk2024/SMB_android`, branch `sub-main`**
 (commit `0e3af60`, 26 Sept 00:34). It is the only copy with everything.
 
 | Repo / branch | State |
 |---|---|
-| `Prathameshk2024/Android_app` **`sub-main`** | Push notifications **and** the navigation fixes. Use this. |
-| `Prathameshk2024/Android_app` `main` | Push, plus zoom-off and no-overscroll only. Missing the Back fix, last-page restore and sideways-drift fix. Do not build from it. |
+| `Prathameshk2024/SMB_android` **`sub-main`** | Push notifications **and** the navigation fixes. Use this. |
+| `Prathameshk2024/SMB_android` `main` | Push, plus zoom-off and no-overscroll only. Missing the Back fix, last-page restore and sideways-drift fix. Do not build from it. |
 | `ArpitaHanjagi/Android_App` `main` | Navigation fixes, **no push at all**. Superseded. |
 | local `appgold-main` (named in the web repo's docs) | Not found on this machine. Superseded. |
 
@@ -94,14 +94,14 @@ same list, and both block the two storage permissions:
 | `POST_NOTIFICATIONS` | Push on Android 13+. expo-notifications 0.32.17 also merges it in |
 | `RECORD_AUDIO` | Voice typing |
 | `VIBRATE` | Harmless; expo-haptics merges it in anyway |
-| `READ_/WRITE_EXTERNAL_STORAGE` | **Blocked** (`tools:node="remove"` + `blockedPermissions`). `react-native-blob-util` merges them in |
+| `READ_/WRITE_EXTERNAL_STORAGE` | **Blocked** (`tools:node="remove"` + `blockedPermissions`). Kept as a guard; `react-native-blob-util` added them and has been uninstalled |
 
 Library manifests also merge in (checked in their published sources, not in a
 built APK): `RECEIVE_BOOT_COMPLETED` (expo-notifications),
-`ACCESS_NETWORK_STATE`, `WAKE_LOCK`, `ACCESS_WIFI_STATE`,
-`DOWNLOAD_WITHOUT_NOTIFICATION` (react-native-blob-util). All are normal-level;
-none needs a Play declaration. Firebase Messaging comes in through Gradle and
-was not checked.
+`ACCESS_NETWORK_STATE`, `WAKE_LOCK`, Firebase's
+`com.google.android.c2dm.permission.RECEIVE`, and launcher-badge permissions
+for several phone brands. All are normal-level; none needs a Play
+declaration. `aapt dump permissions` on the release APK is the final word.
 
 Not needed at all: clipboard (the site only writes), gallery access (Android's
 picker needs no permission), background running (FCM delivers to a closed app).
@@ -134,7 +134,7 @@ cheapest way to get it when wanted.)
 
 Built as a release APK (debug-signed) and **tested on a Samsung Galaxy S24 FE
 (Android 16) and a second phone on 26 September**: every item of the test
-checklist below passed, except the mic (skipped). Testing found one bug, fixed
+checklist below passed, including the mic. Testing found one bug, fixed
 in `ea8689a`: the load-error screen took half the height and Android's English
 "Web page not available" page showed above it — react-native-webview renders
 `renderError`'s view beside the WebView, so it must cover it absolutely.
@@ -144,7 +144,7 @@ in `ea8689a`: the load-error screen took half the height and Android's English
 | 1 | Permission cleanup | Done; confirmed with `aapt` on the release APK |
 | 2 | `POST_NOTIFICATIONS` | Done; present in the release APK |
 | 3 | Refused permission invisible | Done in both repos (handshake steps 3 and 5) |
-| 4 | Mic never requested | **Open**, not tested |
+| 4 | Mic never requested | Tested on the phone: works, no change needed |
 | 5 | Cold-start tap loads twice | Done: synchronous `getLastNotificationResponse()` in `launchTarget()` picks the start page before the first render; Back then steps up to `/seller` or `/shop` |
 | 6 | Stale launch response | Done: `clearLastNotificationResponse()` after use (it exists in 0.32.17) |
 | 7 | Cold-start tap navigates twice | Done: taps de-duplicated by notification identifier |
@@ -159,20 +159,8 @@ in `ea8689a`: the load-error screen took half the height and Android's English
    `SMB_UPLOAD_*` values in `~/.gradle/gradle.properties` on the building
    machine, and back the `.jks` and passwords up somewhere safe. Losing them
    means a Play support request to reset the upload key.
-2. **Mic (issue 4)**: fresh install → tap a mic in a form. If the site shows its
-   "denied" message, the cheapest fix is web-side: call
-   `navigator.mediaDevices.getUserMedia({ audio: true })` once, stop the
-   stream, then start recognition. Android System WebView may also not support
-   the Web Speech API at all; then the site's "not supported" message is what
-   she will see.
-3. **Release to Play**: raise `versionCode`, build signed with the upload
+2. **Release to Play**: raise `versionCode`, build signed with the upload
    key, and run `aapt dump permissions` on that APK once more.
-4. The wrapper's GitHub repo was renamed to `Prathameshk2024/SMB_android`
-   (GitHub redirects the old URL). Update the local remote with
-   `git remote set-url origin https://github.com/Prathameshk2024/SMB_android.git`,
-   and the old name in this file and in the web repo's docs.
-5. Optional: `npm uninstall react-native-blob-util`, since nothing calls it
-   now. After that the storage blocks become redundant but harmless.
 
 ## Keep in mind
 
